@@ -1,0 +1,6 @@
+{
+  "buildCommand": "rm -rf .metro node_modules/.cache && pnpm install && npx expo export --platform web",
+  "outputDirectory": "dist",
+  "installCommand": "pnpm install",
+  "framework": null
+}

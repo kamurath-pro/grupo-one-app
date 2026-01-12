@@ -1,0 +1,468 @@
+import { View, Text, StyleSheet, TextInput, Pressable, ScrollView, Alert, Platform, ActivityIndicator } from "react-native";
+import { useState, useEffect } from "react";
+import { useRouter } from "expo-router";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import MaterialIcons from "@expo/vector-icons/MaterialIcons";
+import * as ImagePicker from "expo-image-picker";
+import { Image } from "expo-image";
+import { useAppAuth } from "@/lib/auth-context";
+import { useData } from "@/lib/data-context";
+import { trpc } from "@/lib/trpc";
+import { getImageBase64DataUrl } from "@/lib/_core/image-base64";
+
+const UNIDADES = [
+  "Geral",
+  "Araripina",
+  "Serra Talhada",
+  "Garanhuns",
+  "Cajazeiras",
+  "Vitória",
+  "Livramento",
+  "Muriaé",
+  "Vilhena",
+  "Corumbá",
+  "Fortaleza",
+  "Macaé Plaza",
+  "Macaé Centro",
+];
+
+// Função para mapear nome da unidade para o ID usado no feed
+const mapUnidadeToCategory = (unidade: string): string => {
+  const mapping: Record<string, string> = {
+    "Geral": "geral",
+    "Araripina": "araripina",
+    "Serra Talhada": "serra",
+    "Garanhuns": "garanhuns",
+    "Cajazeiras": "cajazeiras",
+    "Vitória": "vitoria",
+    "Livramento": "livramento",
+    "Muriaé": "muriae",
+    "Vilhena": "vilhena",
+    "Corumbá": "corumba",
+    "Fortaleza": "fortaleza",
+    "Macaé Plaza": "macae-plaza",
+    "Macaé Centro": "macae-centro",
+  };
+  return mapping[unidade] || "geral";
+};
+
+export default function CreatePostScreen() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { user, isSocio, isAuthenticated, loading: authLoading } = useAppAuth();
+
+  // Redirecionar usuários pendentes ou não autenticados
+  useEffect(() => {
+    if (!authLoading && user && user.approvalStatus === "pending") {
+      router.replace("/pending-approval");
+    } else if (!authLoading && !isAuthenticated) {
+      router.replace("/login");
+    }
+  }, [authLoading, isAuthenticated, user, router]);
+  const [content, setContent] = useState("");
+  // Membros não escolhem unidade (detecta automaticamente), sócios podem escolher
+  const defaultUnidade = user?.unitNames?.[0] || "Geral";
+  const [selectedUnidade, setSelectedUnidade] = useState(defaultUnidade);
+  const [showUnidadeSelector, setShowUnidadeSelector] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<{ uri: string; mimeType?: string } | null>(
+    null,
+  );
+  const [uploading, setUploading] = useState(false);
+  const { addPost } = useData();
+  const uploadImageMutation = trpc.posts.uploadImage.useMutation();
+
+  const pickImage = async () => {
+    // Solicitar permissão
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      if (Platform.OS === "web") {
+        alert("Precisamos de permissão para acessar suas fotos");
+      } else {
+        Alert.alert("Permissão necessária", "Precisamos de permissão para acessar suas fotos");
+      }
+      return;
+    }
+
+    // Abrir galeria com proporção 4:5
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      allowsEditing: true,
+      aspect: [4, 5],
+      quality: 0.8,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      const asset = result.assets[0];
+      setSelectedImage({
+        uri: asset.uri,
+        // `mimeType` exists in newer expo-image-picker, but can be undefined depending on platform/version
+        mimeType: (asset as any).mimeType,
+      });
+    }
+  };
+
+  const removeImage = () => {
+    setSelectedImage(null);
+  };
+
+  const handlePost = async () => {
+    if (!content.trim()) {
+      if (Platform.OS === "web") {
+        alert("Digite algo para publicar");
+      } else {
+        Alert.alert("Atenção", "Digite algo para publicar");
+      }
+      return;
+    }
+
+    try {
+      setUploading(true);
+      let imageUrl: string | undefined;
+
+      // Se houver imagem selecionada, fazer upload (OBRIGATÓRIO - sem fallback)
+      if (selectedImage) {
+        // Normalização PRIORITÁRIA: sempre gerar `data:image/<subtype>;base64,<payload>` válido
+        const normalized = await getImageBase64DataUrl({
+          uri: selectedImage.uri,
+          mimeType: selectedImage.mimeType,
+        });
+
+        // Fazer upload usando tRPC (falha explícita se erro)
+        const result = await uploadImageMutation.mutateAsync({
+          imageBase64: normalized.dataUrl,
+          mimeType: normalized.mimeType,
+        });
+
+        if (!result?.url) {
+          throw new Error("Upload concluído mas URL não retornada");
+        }
+
+        imageUrl = result.url;
+      }
+
+      // Criar o post com a imagem (se houver)
+      const category = mapUnidadeToCategory(selectedUnidade);
+      addPost(content.trim(), category, imageUrl);
+      
+      if (Platform.OS === "web") {
+        alert("Post criado com sucesso!");
+      } else {
+        Alert.alert("Sucesso", "Post criado com sucesso!");
+      }
+      
+      setContent("");
+      setSelectedImage(null);
+      router.back();
+    } catch (error) {
+      if (Platform.OS === "web") {
+        alert("Erro ao criar post. Tente novamente.");
+      } else {
+        Alert.alert("Erro", "Erro ao criar post. Tente novamente.");
+      }
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <View style={[styles.container, { paddingTop: Platform.OS === "web" ? 12 : insets.top }]}>
+      {/* Header */}
+      <View style={styles.header}>
+        <Pressable onPress={() => router.back()} style={styles.closeButton}>
+          <MaterialIcons name="close" size={24} color="#374151" />
+        </Pressable>
+        <Text style={styles.headerTitle}>Nova Publicação</Text>
+        <Pressable
+          onPress={handlePost}
+          style={[styles.postButton, (!content.trim() || uploading) && styles.postButtonDisabled]}
+          disabled={!content.trim() || uploading}
+        >
+          {uploading ? (
+            <ActivityIndicator size="small" color="#FFFFFF" />
+          ) : (
+            <Text style={[styles.postButtonText, !content.trim() && styles.postButtonTextDisabled]}>
+              Publicar
+            </Text>
+          )}
+        </Pressable>
+      </View>
+
+      <ScrollView style={styles.content} keyboardShouldPersistTaps="handled">
+        {/* User info */}
+        <View style={styles.userInfo}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>
+              {user?.name?.charAt(0)?.toUpperCase() || "U"}
+            </Text>
+          </View>
+          <View style={styles.userDetails}>
+            <Text style={styles.userName}>{user?.name || "Usuário"}</Text>
+            {/* Sócios podem escolher unidade, membros veem apenas sua unidade */}
+            {isSocio ? (
+              <Pressable
+                style={styles.unidadeSelector}
+                onPress={() => setShowUnidadeSelector(!showUnidadeSelector)}
+              >
+                <MaterialIcons name="location-on" size={14} color="#003FC3" />
+                <Text style={styles.unidadeText}>{selectedUnidade}</Text>
+                <MaterialIcons name="keyboard-arrow-down" size={16} color="#003FC3" />
+              </Pressable>
+            ) : (
+              <View style={styles.unidadeFixed}>
+                <MaterialIcons name="location-on" size={14} color="#6B7280" />
+                <Text style={styles.unidadeTextFixed}>{defaultUnidade || "Geral"}</Text>
+              </View>
+            )}
+          </View>
+        </View>
+
+        {/* Unidade selector dropdown */}
+        {showUnidadeSelector && (
+          <View style={styles.unidadeDropdown}>
+            {UNIDADES.map((unidade) => (
+              <Pressable
+                key={unidade}
+                style={[
+                  styles.unidadeOption,
+                  selectedUnidade === unidade && styles.unidadeOptionSelected,
+                ]}
+                onPress={() => {
+                  setSelectedUnidade(unidade);
+                  setShowUnidadeSelector(false);
+                }}
+              >
+                <Text
+                  style={[
+                    styles.unidadeOptionText,
+                    selectedUnidade === unidade && styles.unidadeOptionTextSelected,
+                  ]}
+                >
+                  {unidade}
+                </Text>
+                {selectedUnidade === unidade && (
+                  <MaterialIcons name="check" size={18} color="#003FC3" />
+                )}
+              </Pressable>
+            ))}
+          </View>
+        )}
+
+        {/* Text input */}
+        <TextInput
+          style={styles.textInput}
+          placeholder="O que você quer compartilhar?"
+          placeholderTextColor="#9CA3AF"
+          multiline
+          value={content}
+          onChangeText={setContent}
+          autoFocus
+        />
+
+        {/* Preview da imagem selecionada */}
+        {selectedImage && (
+          <View style={styles.imagePreviewContainer}>
+            <Image
+              source={{ uri: selectedImage.uri }}
+              style={styles.imagePreview}
+              contentFit="cover"
+            />
+            <Pressable style={styles.removeImageButton} onPress={removeImage}>
+              <MaterialIcons name="close" size={20} color="#FFFFFF" />
+            </Pressable>
+          </View>
+        )}
+      </ScrollView>
+
+      {/* Bottom actions - apenas foto permitida (sem vídeo/arquivo) */}
+      <View style={[styles.bottomActions, { paddingBottom: Platform.OS === "web" ? 12 : insets.bottom + 12 }]}>
+        <Pressable style={styles.actionButton} onPress={pickImage}>
+          <MaterialIcons name="image" size={24} color="#003FC3" />
+          <Text style={styles.actionText}>
+            {selectedImage ? "Trocar Foto" : "Adicionar Foto"}
+          </Text>
+        </Pressable>
+        <Text style={styles.imageHint}>Proporção 4:5 recomendada</Text>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: "#FFFFFF",
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#E5E7EB",
+  },
+  closeButton: {
+    padding: 4,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#111827",
+  },
+  postButton: {
+    backgroundColor: "#003FC3",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  postButtonDisabled: {
+    backgroundColor: "#E5E7EB",
+  },
+  postButtonText: {
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  postButtonTextDisabled: {
+    color: "#9CA3AF",
+  },
+  content: {
+    flex: 1,
+    padding: 16,
+  },
+  userInfo: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  avatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#003FC3",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarText: {
+    color: "#FFFFFF",
+    fontSize: 20,
+    fontWeight: "600",
+  },
+  userDetails: {
+    marginLeft: 12,
+  },
+  userName: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#111827",
+  },
+  unidadeSelector: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    backgroundColor: "#EBF4FF",
+    borderRadius: 12,
+    gap: 4,
+  },
+  unidadeText: {
+    fontSize: 12,
+    color: "#003FC3",
+    fontWeight: "500",
+  },
+  unidadeDropdown: {
+    backgroundColor: "#FFFFFF",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginBottom: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  unidadeOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#F3F4F6",
+  },
+  unidadeOptionSelected: {
+    backgroundColor: "#EBF4FF",
+  },
+  unidadeOptionText: {
+    fontSize: 14,
+    color: "#374151",
+  },
+  unidadeOptionTextSelected: {
+    color: "#003FC3",
+    fontWeight: "600",
+  },
+  textInput: {
+    fontSize: 16,
+    color: "#111827",
+    minHeight: 150,
+    textAlignVertical: "top",
+  },
+  bottomActions: {
+    flexDirection: "row",
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+    paddingTop: 12,
+    paddingHorizontal: 16,
+    gap: 24,
+  },
+  actionButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  actionText: {
+    fontSize: 14,
+    color: "#003FC3",
+    fontWeight: "500",
+  },
+  unidadeFixed: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+    gap: 4,
+  },
+  unidadeTextFixed: {
+    fontSize: 12,
+    color: "#6B7280",
+  },
+  imageHint: {
+    fontSize: 12,
+    color: "#9CA3AF",
+    marginLeft: "auto",
+    alignSelf: "center",
+  },
+  imagePreviewContainer: {
+    marginTop: 16,
+    borderRadius: 12,
+    overflow: "hidden",
+    position: "relative",
+  },
+  imagePreview: {
+    width: "100%",
+    aspectRatio: 4 / 5,
+    borderRadius: 12,
+  },
+  removeImageButton: {
+    position: "absolute",
+    top: 8,
+    right: 8,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderRadius: 16,
+    width: 32,
+    height: 32,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});
