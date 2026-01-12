@@ -1,6 +1,7 @@
 {
-  "buildCommand": "rm -rf .metro node_modules/.cache node_modules/react-native-css-interop/.cache && pnpm install && npx expo export --platform web --clear",
+  "buildCommand": "rm -rf .metro .expo node_modules/.cache node_modules/react-native-css-interop/.cache dist && pnpm install && npx expo export --platform web --clear",
   "outputDirectory": "dist",
   "installCommand": "pnpm install",
-  "framework": null
+  "framework": null,
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD"
 }
